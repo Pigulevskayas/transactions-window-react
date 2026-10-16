@@ -239,7 +239,7 @@ class TransactionsStore {
         // Call all the callbacks from averageSubscribers
         for (let callback of this.averageSubscribers) {
             callback()
-        };
+        }
     }
 
     getIdsSnapshot() {
@@ -258,7 +258,7 @@ class TransactionsStore {
     notifyIdsList() {
         for (let callback of this.idsSubscribers) {
             callback()
-        };
+        }
     }
 }
 
