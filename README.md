@@ -10,7 +10,7 @@ The project includes the implementation of:
 * batching;
 * render optimization.
 
-# project goal
+## 1. Goal
 A stream periodically inserts, updates, and removes transactions. The main target is to create table, which:
 * stores 5 last transactions
 * receives new transactions and updates for existed
