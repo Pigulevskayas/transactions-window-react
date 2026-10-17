@@ -1,6 +1,6 @@
 # React: оптимизация окна транзакций
 
-Технический конспект учебного проекта `TransactionsTable` — окно из **последних пяти транзакций**, выборочные обновления строк, инкрементальный расчёт среднего и проверка через React DevTools Profiler.
+Технический конспект учебного проекта `TransactionsTable` - окно из **последних пяти транзакций**, выборочные обновления строк, инкрементальный расчёт среднего и проверка через React DevTools Profiler.
 
 ## 1. Цель и требования
 
@@ -55,7 +55,7 @@ TransactionsStore (вне состояния React)
 3. Сохраняет новый объект в `Map`.
 4. Помечает ID как изменённый и уведомляет подписчиков строки (сразу либо в конце batch).
 5. При появлении нового ID обновляет снимок списка ID и уведомляет подписчиков таблицы.
-6. Уведомляет подписчиков среднего **только при изменении наблюдаемого значения**.
+6. Вызывает `notifyAverage()` при обновлении вне batch или устанавливает `averageChanged = true` внутри batch. React сам пропустит рендер, если результат `getAverage()` не изменился.
 
 Если меняются другие поля транзакции, а не только `amount`, проверка изменений должна учитывать и их. Не следует молча пропускать обновление имени, статуса или текста из-за неизменной суммы.
 
@@ -82,18 +82,21 @@ getAverage() {
 ```js
 const LIMIT = 5;
 
-store.beginBatch();
-try {
-    for (const transaction of incomingTransactions) {
-        store.update(transaction);
-        while (store.transactions.size > LIMIT) {
-            const oldestId = store.transactions.keys().next().value;
-            store.delete(oldestId);
+const handlingData = (txUpdates) => {
+    const store = storeRef.current;
+    store.beginBatch();
+    try {
+        for (const tx of txUpdates) {
+            store.update(tx);
+            if (store.transactions.size > LIMIT) {
+                const oldestId = store.transactions.keys().next().value;
+                store.delete(oldestId);
+            }
         }
+    } finally {
+        store.endBatch();
     }
-} finally {
-    store.endBatch();
-}
+};
 ```
 
 `Map` сохраняет порядок **вставки**. Вызов `set()` для существующего ключа не переносит его в конец: обновление суммы не делает транзакцию «новейшей». Если окно должно сортироваться по `createdAt` или времени последнего изменения, это нужно реализовать отдельно.
@@ -113,16 +116,20 @@ useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot?);
 ### Подписка таблицы только на ID
 
 ```jsx
-const subscribeIds = useCallback(
-    (notify) => store.subscribeIds(notify),
-    [store],
-);
-const getIdsSnapshot = useCallback(
-    () => store.getIdsSnapshot(),
-    [store],
-);
+const storeRef = useRef(null);
+if (storeRef.current === null) {
+    storeRef.current = new TransactionsStore();
+}
 
-const ids = useSyncExternalStore(subscribeIds, getIdsSnapshot);
+const subscribe = useCallback(
+    callback => storeRef.current.subscribeIdsList(callback),
+    []
+);
+const getSnapshot = useCallback(
+    () => storeRef.current.getIdsSnapshot(),
+    []
+);
+const transactionIds = useSyncExternalStore(subscribe, getSnapshot);
 ```
 
 Если список ID не изменился, `getIdsSnapshot()` должен вернуть **ту же ссылку на массив**. Нельзя делать `return [...this.transactions.keys()]` при каждом вызове: новый массив нарушает стабильность snapshot и вызывает лишние обновления (вплоть до цикла рендеров).
@@ -130,27 +137,25 @@ const ids = useSyncExternalStore(subscribeIds, getIdsSnapshot);
 ### Подписка строки по ID
 
 ```jsx
-const Row = React.memo(function Row({ id, store }) {
+const TransactionRow = React.memo(function Row({ id, store }) {
     const subscribe = useCallback(
-        (notify) => store.subscribeTransaction(id, notify),
-        [id, store],
+        callback => store.subscribe(id, callback),
+        [id, store]
     );
     const getSnapshot = useCallback(
-        () => store.getTransaction(id),
-        [id, store],
+        () => store.get(id),
+        [id, store]
     );
     const transaction = useSyncExternalStore(subscribe, getSnapshot);
-
-    if (!transaction) return null;
-    return <div>{transaction.id}: {transaction.amount}</div>;
+    return <div><div>{id}</div><div>{transaction?.amount}</div></div>;
 });
 ```
 
-Это **схематический пример**: имена методов должны совпадать с реализацией Store. Изменённая транзакция должна сохраняться как **новый объект**, а неизменённые — сохранять прежние ссылки. Мутация объекта на месте не гарантирует обновление React, поскольку сравнение snapshots использует `Object.is`.
+Это пример с **оригинальными названиями** методов из твоего кода. Изменённая транзакция должна сохраняться как **новый объект**, а неизменённые — сохранять прежние ссылки. Мутация объекта на месте не гарантирует обновление React, поскольку сравнение snapshots использует `Object.is`.
 
 ### Подписка среднего
 
-`AverageAmount` использует отдельные `subscribeAverage()` и `getAverage()`. При изменении суммы/количества транзакций Store уведомляет эту подписку, не затрагивая список ID, если состав окна прежний.
+`AverageAmount` использует отдельные `subscribeAverage()` и `getAverage()` через локальные `subscribe` и `getSnapshot`. При изменении суммы/количества транзакций Store уведомляет эту подписку, не затрагивая список ID, если состав окна прежний.
 
 ### Если используется SSR
 
@@ -181,18 +186,18 @@ const getServerIdsSnapshot = () => EMPTY_IDS;
 
 ## 7. Пакетирование уведомлений (`batching`)
 
-`beginBatch()` включает накопление изменений. Операции `update/delete` добавляют ID в `changedIds`, устанавливают флаги `idsChanged` и `averageChanged`, но не рассылают уведомления сразу.
+`beginBatch()` включает накопление изменений. В текущем коде `update()` добавляет ID в `changedIds`, а `delete()` **не добавляет** удалённый ID в `changedIds`; обе операции устанавливают нужные флаги. Внутри batch уведомления не рассылаются.
 
 `endBatch()`:
 
-1. Формирует **один** новый `idsSnapshot`, если итоговый состав ID изменился.
-2. Уведомляет подписчиков каждого затронутого ID (не более одного раза за batch).
-3. Уведомляет подписчиков ID, если изменился итоговый состав окна.
-4. Уведомляет подписчиков среднего, если итоговое среднее действительно изменилось.
+1. Уведомляет подписчиков ID из `changedIds`, затем очищает Set.
+2. Вызывает `notifyAverage()`, если `averageChanged === true`.
+3. Если `idsChanged === true`, один раз пересоздаёт `idsSnapshot` и вызывает `notifyIdsList()`.
+4. Сбрасывает флаги. Уведомления основаны на флагах операций, **не на сравнении итогового значения**.
 
 Преимущество: несколько операций не вызывают каскад повторных уведомлений. При этом **число вызовов подписчиков и число React commits — не одно и то же**: React может дополнительно объединять обновления.
 
-Нюансы реализации: нужен корректный `try/finally`; вложенные batch требуют счётчика глубины либо явного запрета; для минимальных уведомлений сравнивайте **итоговое состояние** с состоянием до batch. Например, временное добавление и удаление одного ID внутри пакета не должно менять конечный снимок.
+Нюансы реализации: нужен корректный `try/finally`; вложенные batch требуют счётчика глубины либо явного запрета; для дальнейшей оптимизации можно сравнивать **итоговое состояние** с состоянием до batch. Сейчас временное добавление и удаление одного ID всё равно установит `idsChanged` и пересоздаст snapshot.
 
 ## 8. Ожидаемые рендеры
 
@@ -227,7 +232,7 @@ const getServerIdsSnapshot = () => EMPTY_IDS;
 5. **Ranked** показывает участвовавшие компоненты по времени рендера.
 6. В панели **What caused this update?** проверь инициаторов обновления.
 
-В ходе упражнения Profiler показал: `TransactionsTable` серый, а обновление инициировали `Row(tr_3)`, `Row(tr_4)` и `AverageAmount`. Это подтвердило изоляцию подписок. На другом снимке при добавлении `tr_6` таблица и новая строка были цветными — также ожидаемо.
+В ходе упражнения Profiler показал: `TransactionsTable` серый, а обновление инициировали `Row(tr_3)`, `Row(tr_4)` и `AverageAmount`. Это подтвердило изоляцию подписок. На другом снимке при добавлении `tr_6` таблица и новая строка были цветными - также ожидаемо.
 
 **Не путать:** Profiler группирует данные по commit; `console.count()` считает вызовы функции компонента. В development-режиме со `StrictMode` число вызовов может отличаться от числа завершённых commits.
 
@@ -258,8 +263,8 @@ const getServerIdsSnapshot = () => EMPTY_IDS;
 | Уведомление подписчиков | O(количество соответствующих подписчиков) |
 | Рендер списка строк | O(LIMIT) при изменении списка ID; memo может пропустить рендер неизменённых строк |
 
-При `LIMIT = 5` абсолютные затраты невелики. Ценность упражнения — в масштабируемой модели **точечных подписок**, предсказуемом поведении и умении измерять обновления.
+При `LIMIT = 5` абсолютные затраты невелики. Ценность упражнения в масштабируемой модели **точечных подписок**, предсказуемом поведении и умении измерять обновления.
 
 ## 12. Итог
 
-Мы разделили три независимые причины обновления UI: **данные конкретной транзакции**, **состав окна** и **среднее значение**. `useSyncExternalStore` связывает внешний Store с React; `React.memo`, стабильные props/snapshots и ключи предотвращают лишнюю работу; batching объединяет уведомления; Profiler позволяет проверить гипотезу на реальных commits.
+Разделены три независимые причины обновления UI: **данные конкретной транзакции**, **состав окна** и **среднее значение**. `useSyncExternalStore` связывает внешний Store с React; `React.memo`, стабильные props/snapshots и ключи предотвращают лишнюю работу; batching объединяет уведомления; Profiler позволяет проверить гипотезу на реальных commits.
