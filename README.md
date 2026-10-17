@@ -94,18 +94,21 @@ For every incoming transaction, update the store; if its size exceeds `LIMIT`, r
 ```js
 const LIMIT = 5;
 
-store.beginBatch();
-try {
-    for (const transaction of incomingTransactions) {
-        store.update(transaction);
-        while (store.transactions.size > LIMIT) {
-            const oldestId = store.transactions.keys().next().value;
-            store.delete(oldestId);
+const handlingData = (txUpdates) => {
+    const store = storeRef.current;
+    store.beginBatch();
+    try {
+        for (const tx of txUpdates) {
+            store.update(tx);
+            if (store.transactions.size > LIMIT) {
+                const oldestId = store.transactions.keys().next().value;
+                store.delete(oldestId);
+            }
         }
+    } finally {
+        store.endBatch();
     }
-} finally {
-    store.endBatch();
-}
+};
 ```
 
 A JavaScript `Map` preserves **insertion order**. Calling `set()` for an existing key does **not** move it to the end. Updating an amount therefore does not make a transaction the newest. Sorting by `createdAt` or last-updated time would require separate logic.
@@ -123,16 +126,20 @@ useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot?);
 ### Table: subscribe to IDs only
 
 ```jsx
-const subscribeIds = useCallback(
-    (notify) => store.subscribeIds(notify),
-    [store],
-);
-const getIdsSnapshot = useCallback(
-    () => store.getIdsSnapshot(),
-    [store],
-);
+const storeRef = useRef(null);
+if (storeRef.current === null) {
+    storeRef.current = new TransactionsStore();
+}
 
-const ids = useSyncExternalStore(subscribeIds, getIdsSnapshot);
+const subscribe = useCallback(
+    callback => storeRef.current.subscribeIdsList(callback),
+    []
+);
+const getSnapshot = useCallback(
+    () => storeRef.current.getIdsSnapshot(),
+    []
+);
+const transactionIds = useSyncExternalStore(subscribe, getSnapshot);
 ```
 
 When membership has not changed, `getIdsSnapshot()` must return **the same array reference**. Avoid returning `[...this.transactions.keys()]` on every call: creating a new snapshot each time can trigger unnecessary updates and even render loops.
@@ -140,23 +147,21 @@ When membership has not changed, `getIdsSnapshot()` must return **the same array
 ### Row: subscribe by ID
 
 ```jsx
-const Row = React.memo(function Row({ id, store }) {
+const TransactionRow = React.memo(function Row({ id, store }) {
     const subscribe = useCallback(
-        (notify) => store.subscribeTransaction(id, notify),
-        [id, store],
+        callback => store.subscribe(id, callback),
+        [id, store]
     );
     const getSnapshot = useCallback(
-        () => store.getTransaction(id),
-        [id, store],
+        () => store.get(id),
+        [id, store]
     );
     const transaction = useSyncExternalStore(subscribe, getSnapshot);
-
-    if (!transaction) return null;
-    return <div>{transaction.id}: {transaction.amount}</div>;
+    return <div><div>{id}</div><div>{transaction?.amount}</div></div>;
 });
 ```
 
-This is **illustrative code**; adapt method names to the actual Store implementation. Changed transactions should be represented by **new objects** while unchanged ones retain their references. In-place mutation can be invisible to React because snapshot comparisons use `Object.is`.
+This example uses the **exact method names** from the supplied Store. Changed transactions should be represented by **new objects** while unchanged ones retain their references. In-place mutation can be invisible to React because snapshot comparisons use `Object.is`.
 
 ### Average: independent subscription
 
@@ -191,18 +196,18 @@ This creates a fresh object whenever the parent renders, defeating shallow prop 
 
 ## 7. Batching notifications
 
-`beginBatch()` switches the Store into accumulation mode. `update/delete` collect IDs in `changedIds` and set `idsChanged` / `averageChanged`, without notifying immediately.
+`beginBatch()` switches the Store into accumulation mode. In the current implementation, `update()` adds IDs to `changedIds`, but `delete()` **does not**. Both operations set the relevant flags and defer notifications.
 
 At `endBatch()`:
 
-1. Create **one** new `idsSnapshot` if final membership changed.
-2. Notify each affected transaction ID's subscribers at most once.
-3. Notify ID-list subscribers if final membership changed.
-4. Notify average subscribers if the final average actually changed.
+1. Notify listeners for IDs in `changedIds`, then clear the Set.
+2. Call `notifyAverage()` when `averageChanged` is true.
+3. If `idsChanged` is true, rebuild `idsSnapshot` once and call `notifyIdsList()`.
+4. Reset flags. Notifications depend on operation flags, **not on a comparison of final values**.
 
 Batching reduces repeated notifications. However, **subscriber notification counts and React commit counts are different concepts**: React can batch updates as well.
 
-Implementation details matter: use `try/finally`; either support nested batches with a depth counter or explicitly disallow them; compare the **final state** with the pre-batch state to avoid notifying for transient changes (e.g., an ID inserted and removed in the same batch).
+Implementation details matter: use `try/finally`; either support nested batches with a depth counter or explicitly disallow them; a future optimization could compare the **final state** with the pre-batch state. Currently, an ID inserted and removed in the same batch still sets `idsChanged` and rebuilds the snapshot.
 
 ## 8. Expected render behavior
 
