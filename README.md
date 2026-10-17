@@ -233,20 +233,7 @@ The ID snapshot retains its reference; only the two affected row subscriptions a
 | `Row(tr_2..tr_5)` | No re-render if props and snapshots are unchanged |
 | `AverageAmount` | Renders if the average changed |
 
-## 9. Verifying with React DevTools Profiler
-
-1. Open **Profiler** and click **Record**.
-2. Trigger one controlled update (e.g., amounts for `tr_3` and `tr_4` only).
-3. Stop recording, select the relevant **commit**, and open **Flamegraph**.
-4. **Colored** components rendered in that commit; **gray** components did not.
-5. **Ranked** lists rendered components by render duration.
-6. Inspect **What caused this update?** for the components that triggered the update.
-
-During the exercise, the Profiler showed `TransactionsTable` in gray while `Row(tr_3)`, `Row(tr_4)`, and `AverageAmount` triggered the update. That confirmed subscription isolation. In a separate capture, adding `tr_6` rendered the table and the new row, as expected.
-
-**Important distinction:** Profiler reports commits; `console.count()` counts component-function invocations. Development `StrictMode` can cause more invocations than completed commits.
-
-## 10. Lifecycle and common pitfalls
+## 9. Lifecycle and common pitfalls
 
 **Render → Commit → Effects:** React calculates the tree, applies changes to the DOM, then runs effects. `useEffect` does not execute during server rendering. Effect cleanup runs before rerunning an effect with changed dependencies and on unmount.
 
@@ -262,7 +249,7 @@ During the exercise, the Profiler showed `TransactionsTable` in gray while `Row(
 - Accessing `window` during SSR module evaluation (`window is not defined`); initialize browser-only functionality on the client.
 - Omitting `getServerSnapshot` during SSR (`Missing getServerSnapshot`).
 
-## 11. Complexity
+## 10. Complexity
 
 | Operation | Typical complexity |
 | --- | --- |
@@ -275,6 +262,6 @@ During the exercise, the Profiler showed `TransactionsTable` in gray while `Row(
 
 With `LIMIT = 5`, absolute work is small. The point is learning **fine-grained subscriptions**, predictable UI updates, and measurement.
 
-## 12. Takeaways
+## 11. Takeaways
 
 The UI has three independent update dimensions: **one transaction's data**, **window membership**, and **the average**. `useSyncExternalStore` connects an external Store to React; `React.memo`, stable props/snapshots, and stable keys avoid unnecessary work; batching coalesces notifications; Profiler validates the behavior at the commit level.
