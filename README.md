@@ -161,7 +161,7 @@ const TransactionRow = React.memo(function Row({ id, store }) {
 });
 ```
 
-This example uses the **exact method names** from the supplied Store. Changed transactions should be represented by **new objects** while unchanged ones retain their references. In-place mutation can be invisible to React because snapshot comparisons use `Object.is`.
+Changed transactions should be represented by **new objects** while unchanged ones retain their references. In-place mutation can be invisible to React because snapshot comparisons use `Object.is`.
 
 ### Average: independent subscription
 
